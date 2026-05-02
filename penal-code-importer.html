@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Penal Code Importer</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #f5f6f8;
+        color: #111827;
+      }
+
+      main {
+        max-width: 900px;
+        margin: 32px auto;
+        padding: 24px;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+      }
+
+      p {
+        margin: 0 0 16px;
+        line-height: 1.45;
+      }
+
+      .field {
+        margin-bottom: 14px;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 14px;
+      }
+
+      #chargesInput {
+        min-height: 320px;
+      }
+
+      #firebaseConfigInput {
+        min-height: 130px;
+      }
+
+      button {
+        padding: 10px 18px;
+        border: none;
+        border-radius: 6px;
+        background: #2563eb;
+        color: #fff;
+        font-size: 15px;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.65;
+        cursor: wait;
+      }
+
+      #result {
+        margin-top: 14px;
+        padding: 10px;
+        border-radius: 6px;
+        display: none;
+        white-space: pre-wrap;
+      }
+
+      #result.success {
+        display: block;
+        background: #ecfdf5;
+        color: #065f46;
+        border: 1px solid #a7f3d0;
+      }
+
+      #result.error {
+        display: block;
+        background: #fef2f2;
+        color: #991b1b;
+        border: 1px solid #fecaca;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Penal Code Importer</h1>
+      <p>
+        Admin utility page for importing ECRP penal code charges into Firestore collection
+        <strong>penalCodes</strong>.
+      </p>
+
+      <div class="field">
+        <label for="firebaseConfigInput">Firebase config (optional if your app already sets <code>window.firebaseConfig</code>)</label>
+        <textarea id="firebaseConfigInput" placeholder='{
+  "apiKey": "...",
+  "authDomain": "...",
+  "projectId": "...",
+  "storageBucket": "...",
+  "messagingSenderId": "...",
+  "appId": "..."
+}'></textarea>
+      </div>
+
+      <div class="field">
+        <label for="chargesInput">Charges array (JavaScript/JSON format)</label>
+        <textarea id="chargesInput" placeholder='[
+  {
+    "category": "General Misdemeanor",
+    "code": "GM04",
+    "label": "GM04 - Failure to Comply",
+    "name": "Failure to Comply"
+  }
+]'></textarea>
+      </div>
+
+      <button id="importButton" type="button">Import Penal Codes</button>
+      <div id="result" role="status" aria-live="polite"></div>
+    </main>
+
+    <script type="module">
+      import { initializeApp, getApps } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
+      import { getFirestore, doc, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
+
+      const configInput = document.getElementById('firebaseConfigInput');
+      const chargesInput = document.getElementById('chargesInput');
+      const importButton = document.getElementById('importButton');
+      const result = document.getElementById('result');
+
+      function showMessage(message, type) {
+        result.textContent = message;
+        result.className = type;
+      }
+
+      function parseLooseArray(rawText) {
+        const wrapped = new Function(`"use strict"; return (${rawText});`);
+        return wrapped();
+      }
+
+      function getFirebaseConfig() {
+        if (window.firebaseConfig && typeof window.firebaseConfig === 'object') {
+          return window.firebaseConfig;
+        }
+
+        const raw = configInput.value.trim();
+        if (!raw) {
+          throw new Error(
+            'Firebase config not found. Paste config JSON above or expose window.firebaseConfig before using this page.'
+          );
+        }
+
+        try {
+          return JSON.parse(raw);
+        } catch {
+          throw new Error('Firebase config is not valid JSON.');
+        }
+      }
+
+      async function importPenalCodes() {
+        importButton.disabled = true;
+        showMessage('Import in progress...', 'success');
+
+        try {
+          const rawCharges = chargesInput.value.trim();
+          if (!rawCharges) {
+            throw new Error('Charges input is empty. Paste an array of charges first.');
+          }
+
+          let parsed;
+          try {
+            parsed = JSON.parse(rawCharges);
+          } catch {
+            parsed = parseLooseArray(rawCharges);
+          }
+
+          if (!Array.isArray(parsed)) {
+            throw new Error('Parsed data is not an array. Expected format: [ { ... } ]');
+          }
+
+          const firebaseConfig = getFirebaseConfig();
+          const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+          const db = getFirestore(app);
+
+          let successCount = 0;
+          for (let i = 0; i < parsed.length; i += 1) {
+            const charge = parsed[i];
+            const code = String(charge?.code || '').trim();
+
+            if (!code) {
+              throw new Error(`Charge at index ${i} is missing a valid code.`);
+            }
+
+            const payload = {
+              category: charge?.category ?? '',
+              code,
+              label: charge?.label ?? '',
+              name: charge?.name ?? ''
+            };
+
+            await setDoc(doc(db, 'penalCodes', code), payload);
+            successCount += 1;
+          }
+
+          showMessage(`Import complete. Successfully imported ${successCount} penal code(s).`, 'success');
+        } catch (error) {
+          showMessage(`Import failed: ${error.message}`, 'error');
+        } finally {
+          importButton.disabled = false;
+        }
+      }
+
+      importButton.addEventListener('click', importPenalCodes);
+    </script>
+  </body>
+</html>
